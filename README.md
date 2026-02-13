@@ -15,7 +15,7 @@
 
 Managing environment variables shouldn't be a security risk or a collaboration nightmare. Traditional methods like sharing `.env` files over Slack or using unencrypted text files are prone to leaks. Enterprise solutions can be complex and expensive.
 
-**dotENV strikes the perfect balance.** It offers military-grade encryption with a developer-friendly interface, ensuring your secrets are safe and accessible only to those who need them.
+**dotENV strikes the perfect balance.** It offers industry-level encryption with a developer-friendly interface, ensuring your secrets are safe and accessible only to those who need them.
 
 ### Key Qualities
 
@@ -35,7 +35,7 @@ Managing environment variables shouldn't be a security risk or a collaboration n
 
 ## Features at a Glance
 
-| Feature | competitor B | dotENV |
+| Feature | Others | dotENV |
 | :--- | :---: | :---: |
 | **End-to-End Encryption** | ❌ | ✅ |
 | **Client-Side Decryption** | ❌ | ✅ |
