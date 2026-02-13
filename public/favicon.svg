@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <rect width="32" height="32" rx="6" fill="#0a0a0a"/>
+  <!-- Mini shield -->
+  <path d="M16 4 L26 9 L26 17 C26 23 22 27 16 29 C10 27 6 23 6 17 L6 9 Z" 
+        fill="none" stroke="#22c55e" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M16 7 L24 11 L24 17 C24 22 20 25 16 27 C12 25 8 22 8 17 L8 11 Z" 
+        fill="rgba(34, 197, 94, 0.12)"/>
+  <!-- Key circle -->
+  <circle cx="16" cy="15" r="3" fill="none" stroke="#22c55e" stroke-width="1.5"/>
+  <!-- Key stem -->
+  <rect x="15" y="18" width="2" height="5" rx="1" fill="#22c55e"/>
+  <rect x="17" y="21" width="2.5" height="1.5" rx="0.75" fill="#22c55e"/>
+</svg>
