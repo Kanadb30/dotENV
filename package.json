@@ -1,6 +1,17 @@
 {
   "name": "env",
   "version": "0.1.0",
+  "description": "Secure Secret Manager with End-to-End Encryption",
+  "author": "Kanad Bajpai <kanadb@iitbhilai.ac.in>",
+  "license": "MIT",
+  "keywords": [
+    "secret-manager",
+    "e2ee",
+    "nextjs",
+    "supabase",
+    "security",
+    "encryption"
+  ],
   "private": true,
   "scripts": {
     "dev": "next dev",
