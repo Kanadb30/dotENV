@@ -9,6 +9,12 @@
  * 3. Verifies password by decrypting the stored verification string
  * 4. Once unlocked, master password is kept in React state for the session
  * 5. All operations (reveal, copy, edit, add, upload, download) use the session password
+ *
+ * Lockout flow:
+ * - Failed attempts are tracked via localStorage (see lib/lockout.ts)
+ * - After 3 consecutive failures the unlock UI is disabled for 3 hours
+ * - A live countdown timer shows the remaining lockout duration
+ * - Successful unlock clears the lockout state
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -16,6 +22,13 @@ import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { decrypt } from '@/lib/crypto';
 import { generateEnvFile } from '@/lib/env-parser';
+import {
+    isLockedOut,
+    recordFailedAttempt,
+    getRemainingAttempts,
+    clearLockout,
+    MAX_ATTEMPTS,
+} from '@/lib/lockout';
 import Navbar from '@/components/Navbar';
 import SecretRow from '@/components/SecretRow';
 import AddSecretModal from '@/components/AddSecretModal';
@@ -46,6 +59,21 @@ interface Project {
     mp_salt: string;
 }
 
+/** Format milliseconds as "Xh Ym Zs" */
+function formatCountdown(ms: number): string {
+    if (ms <= 0) return '0s';
+    const totalSeconds = Math.ceil(ms / 1000);
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+
+    const parts: string[] = [];
+    if (h > 0) parts.push(`${h}h`);
+    if (m > 0) parts.push(`${m}m`);
+    if (s > 0 || parts.length === 0) parts.push(`${s}s`);
+    return parts.join(' ');
+}
+
 export default function ProjectPage() {
     const params = useParams();
     const router = useRouter();
@@ -58,6 +86,11 @@ export default function ProjectPage() {
     // Master password session state
     const [masterPassword, setMasterPassword] = useState<string | null>(null);
     const [unlocking, setUnlocking] = useState(false);
+
+    // Lockout state
+    const [locked, setLocked] = useState(false);
+    const [lockRemainingMs, setLockRemainingMs] = useState(0);
+    const [attemptsLeft, setAttemptsLeft] = useState(MAX_ATTEMPTS);
 
     // Modal states
     const [showAddModal, setShowAddModal] = useState(false);
@@ -75,6 +108,47 @@ export default function ProjectPage() {
 
     const headerRef = useRef<HTMLDivElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
+
+    // ----- Lockout helpers -----
+
+    /** Refresh lockout state from localStorage */
+    const refreshLockoutState = useCallback(() => {
+        const lockout = isLockedOut(projectId);
+        setLocked(lockout.locked);
+        setLockRemainingMs(lockout.remainingMs);
+
+        if (!lockout.locked) {
+            setAttemptsLeft(getRemainingAttempts(projectId));
+        } else {
+            setAttemptsLeft(0);
+        }
+    }, [projectId]);
+
+    // Check lockout on mount
+    useEffect(() => {
+        refreshLockoutState();
+    }, [refreshLockoutState]);
+
+    // Live countdown timer while locked
+    useEffect(() => {
+        if (!locked) return;
+
+        const interval = setInterval(() => {
+            const lockout = isLockedOut(projectId);
+            if (!lockout.locked) {
+                // Lockout expired
+                setLocked(false);
+                setLockRemainingMs(0);
+                setAttemptsLeft(getRemainingAttempts(projectId));
+                clearInterval(interval);
+                toast.success('Lockout expired. You can try again.');
+            } else {
+                setLockRemainingMs(lockout.remainingMs);
+            }
+        }, 1000);
+
+        return () => clearInterval(interval);
+    }, [locked, projectId]);
 
     const fetchData = useCallback(async () => {
         const supabase = createClient();
@@ -140,6 +214,7 @@ export default function ProjectPage() {
 
         if (!project?.mp_verify) {
             // Legacy project without master password verification — just accept
+            clearLockout(projectId);
             setMasterPassword(password);
             setUnlocking(false);
             return;
@@ -150,10 +225,29 @@ export default function ProjectPage() {
             if (result !== VERIFICATION_STRING) {
                 throw new Error('Invalid');
             }
+            // Success — clear lockout and unlock
+            clearLockout(projectId);
             setMasterPassword(password);
+            setAttemptsLeft(MAX_ATTEMPTS);
+            setLocked(false);
             toast.success('Project unlocked');
         } catch {
-            toast.error('Incorrect master password');
+            // Record the failed attempt
+            const result = recordFailedAttempt(projectId);
+
+            if (result.locked) {
+                refreshLockoutState();
+                toast.error('Too many failed attempts. Project locked for 3 hours.');
+            } else {
+                const remaining = MAX_ATTEMPTS - result.attempts;
+                setAttemptsLeft(remaining);
+                toast.error(
+                    remaining > 0
+                        ? `Incorrect password. ${remaining} attempt${remaining !== 1 ? 's' : ''} remaining.`
+                        : 'Incorrect master password'
+                );
+            }
+
             throw new Error('Incorrect password');
         } finally {
             setUnlocking(false);
@@ -264,12 +358,14 @@ export default function ProjectPage() {
                         margin: '40px auto',
                         textAlign: 'center',
                     }}>
-                        <div style={{ width: 48, height: 48, borderRadius: 'var(--radius-lg)', background: 'var(--accent-dim)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: 'var(--text-tertiary)' }}>
+                        <div style={{ width: 48, height: 48, borderRadius: 'var(--radius-lg)', background: locked ? 'rgba(239, 68, 68, 0.12)' : 'var(--accent-dim)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: locked ? 'var(--error)' : 'var(--text-tertiary)', transition: 'all 0.3s ease' }}>
                             <Lock size={22} />
                         </div>
                         <h1 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: 4 }}>{project?.name}</h1>
                         <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginBottom: 24 }}>
-                            This project is locked. Enter your master password to view and manage secrets.
+                            {locked
+                                ? 'This project is temporarily locked due to too many failed password attempts.'
+                                : 'This project is locked. Enter your master password to view and manage secrets.'}
                         </p>
 
                         <MasterPasswordModal
@@ -278,6 +374,10 @@ export default function ProjectPage() {
                             onSubmit={handleUnlock}
                             onClose={() => router.push('/dashboard')}
                             loading={unlocking}
+                            remainingAttempts={attemptsLeft}
+                            maxAttempts={MAX_ATTEMPTS}
+                            lockedOut={locked}
+                            lockoutCountdown={locked ? formatCountdown(lockRemainingMs) : undefined}
                         />
                     </div>
                 </main>
