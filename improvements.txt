@@ -1,0 +1,4 @@
+Increase PBKDF2 iterations — bumping from 100,000 to 600,000 or 1,000,000 makes each guess 6–10× slower (but also slows legitimate unlocks by the same factor)
+Switch to Argon2id — a memory-hard KDF that's much more GPU-resistant than PBKDF2. It's the modern gold standard (used by Bitwarden, 1Password). However, it's not natively available in Web Crypto API — you'd need a WebAssembly library like argon2-browser.
+Don't hardcode the verification string — instead of a known plaintext "__dotenv_verify__", generate a random verification string per project and store its hash. This doesn't massively change the threat model, but removes the "known plaintext" advantage.
+Enforce strong passwords — require minimum entropy/length at creation time (you currently require 8 chars, which is on the low side).
