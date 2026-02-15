@@ -4,24 +4,54 @@
  * Dashboard Page
  *
  * Card grid layout for projects with user name greeting.
+ * Delete flow: click delete → master password modal (with shared lockout) → delete confirmation modal.
  */
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { decrypt } from '@/lib/crypto';
+import {
+    isLockedOut,
+    recordFailedAttempt,
+    getRemainingAttempts,
+    clearLockout,
+    MAX_ATTEMPTS,
+} from '@/lib/lockout';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import CreateProjectModal from '@/components/CreateProjectModal';
 import DeleteProjectModal from '@/components/DeleteProjectModal';
+import MasterPasswordModal from '@/components/MasterPasswordModal';
 import toast from 'react-hot-toast';
 import anime from 'animejs';
 import { Plus, Folder, Trash2, Key, Calendar } from 'lucide-react';
+
+const VERIFICATION_STRING = '__dotenv_verify__';
 
 interface Project {
     id: string;
     name: string;
     created_at: string;
     secretCount?: number;
+    mp_verify?: string;
+    mp_iv?: string;
+    mp_salt?: string;
+}
+
+/** Format milliseconds as "Xh Ym Zs" */
+function formatCountdown(ms: number): string {
+    if (ms <= 0) return '0s';
+    const totalSeconds = Math.ceil(ms / 1000);
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+
+    const parts: string[] = [];
+    if (h > 0) parts.push(`${h}h`);
+    if (m > 0) parts.push(`${m}m`);
+    if (s > 0 || parts.length === 0) parts.push(`${s}s`);
+    return parts.join(' ');
 }
 
 export default function DashboardPage() {
@@ -34,6 +64,15 @@ export default function DashboardPage() {
     const [userName, setUserName] = useState('');
     const gridRef = useRef<HTMLDivElement>(null);
     const headerRef = useRef<HTMLDivElement>(null);
+
+    // Delete password gate state
+    const [deletePasswordTarget, setDeletePasswordTarget] = useState<Project | null>(null);
+    const [deleteVerifying, setDeleteVerifying] = useState(false);
+
+    // Lockout state for the delete password gate
+    const [deleteLocked, setDeleteLocked] = useState(false);
+    const [deleteLockRemainingMs, setDeleteLockRemainingMs] = useState(0);
+    const [deleteAttemptsLeft, setDeleteAttemptsLeft] = useState(MAX_ATTEMPTS);
 
     const fetchProjects = useCallback(async () => {
         const supabase = createClient();
@@ -94,9 +133,92 @@ export default function DashboardPage() {
         }
     }, [loading, projects]);
 
+    // ----- Lockout helpers for delete gate -----
+
+    const refreshDeleteLockout = useCallback((projectId: string) => {
+        const lockout = isLockedOut(projectId);
+        setDeleteLocked(lockout.locked);
+        setDeleteLockRemainingMs(lockout.remainingMs);
+        setDeleteAttemptsLeft(lockout.locked ? 0 : getRemainingAttempts(projectId));
+    }, []);
+
+    // Live countdown timer while locked
+    useEffect(() => {
+        if (!deleteLocked || !deletePasswordTarget) return;
+
+        const interval = setInterval(() => {
+            const lockout = isLockedOut(deletePasswordTarget.id);
+            if (!lockout.locked) {
+                setDeleteLocked(false);
+                setDeleteLockRemainingMs(0);
+                setDeleteAttemptsLeft(getRemainingAttempts(deletePasswordTarget.id));
+                clearInterval(interval);
+                toast.success('Lockout expired. You can try again.');
+            } else {
+                setDeleteLockRemainingMs(lockout.remainingMs);
+            }
+        }, 1000);
+
+        return () => clearInterval(interval);
+    }, [deleteLocked, deletePasswordTarget]);
+
+    // ----- Delete flow -----
+
     const handleDeleteClick = (e: React.MouseEvent, project: Project) => {
         e.stopPropagation();
-        setDeleteTarget({ id: project.id, name: project.name });
+        // Step 1: show master password modal first
+        setDeletePasswordTarget(project);
+        refreshDeleteLockout(project.id);
+    };
+
+    const handleDeletePasswordSubmit = async (password: string) => {
+        if (!deletePasswordTarget) return;
+        setDeleteVerifying(true);
+
+        const proj = deletePasswordTarget;
+
+        if (!proj.mp_verify) {
+            // Legacy project without master password — skip verification
+            clearLockout(proj.id);
+            setDeletePasswordTarget(null);
+            setDeleteTarget({ id: proj.id, name: proj.name });
+            setDeleteVerifying(false);
+            return;
+        }
+
+        try {
+            const result = await decrypt(proj.mp_verify, proj.mp_iv!, proj.mp_salt!, password);
+            if (result !== VERIFICATION_STRING) {
+                throw new Error('Invalid');
+            }
+            // Password correct — clear lockout and proceed to delete confirmation
+            clearLockout(proj.id);
+            setDeleteAttemptsLeft(MAX_ATTEMPTS);
+            setDeleteLocked(false);
+            setDeletePasswordTarget(null);
+            setDeleteTarget({ id: proj.id, name: proj.name });
+            toast.success('Password verified');
+        } catch {
+            // Record failed attempt (shared lockout with unlock flow)
+            const res = recordFailedAttempt(proj.id);
+
+            if (res.locked) {
+                refreshDeleteLockout(proj.id);
+                toast.error('Too many failed attempts. Locked for 3 hours.');
+            } else {
+                const remaining = MAX_ATTEMPTS - res.attempts;
+                setDeleteAttemptsLeft(remaining);
+                toast.error(
+                    remaining > 0
+                        ? `Incorrect password. ${remaining} attempt${remaining !== 1 ? 's' : ''} remaining.`
+                        : 'Incorrect master password'
+                );
+            }
+
+            throw new Error('Incorrect password');
+        } finally {
+            setDeleteVerifying(false);
+        }
     };
 
     const handleDeleteConfirm = async () => {
@@ -255,6 +377,22 @@ export default function DashboardPage() {
                 />
             )}
 
+            {/* Step 1: Master password gate for delete */}
+            {deletePasswordTarget && (
+                <MasterPasswordModal
+                    title="Verify identity"
+                    description={`Enter the master password for "${deletePasswordTarget.name}" to proceed with deletion.`}
+                    onSubmit={handleDeletePasswordSubmit}
+                    onClose={() => setDeletePasswordTarget(null)}
+                    loading={deleteVerifying}
+                    remainingAttempts={deleteAttemptsLeft}
+                    maxAttempts={MAX_ATTEMPTS}
+                    lockedOut={deleteLocked}
+                    lockoutCountdown={deleteLocked ? formatCountdown(deleteLockRemainingMs) : undefined}
+                />
+            )}
+
+            {/* Step 2: Delete confirmation (shown after password verified) */}
             {deleteTarget && (
                 <DeleteProjectModal
                     projectName={deleteTarget.name}
